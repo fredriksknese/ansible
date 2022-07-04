@@ -1,0 +1,115 @@
+---
+- name: Aktiverar dot1x
+  hosts: all
+  gather_facts: false
+  connection: network_cli
+  tasks:
+    - name: Activates dot1x for vlan Public and Users and add them to inventories.
+      block:
+        - name: Verify that vlans exists
+          vlandb:
+            firstMatchingVlanId:
+              - Public
+            assert_vlans:
+              - Public
+              - Users
+          register: access_vlandb
+
+        - name: Get running-config
+          cisco.ios.ios_command:
+            commands:
+              - show running-config
+          register: running_config
+
+        - name: Set authentication server
+          ios_config:
+            lines:
+              - server-private 10.0.0.1 auth-port 1812 acct-port 1813 key 7 XXX
+              - server-private 10.0.0.2 auth-port 1812 acct-port 1813 key 7 XXX
+              - load-balance method least-outstanding 
+            parents: aaa group server radius ISE
+            before: no aaa group server radius ISE
+            running_config: "{{running_config.stdout[0]}}" 
+            match: exact
+
+        - name: Enable Change of Authorization
+          ios_config:
+            lines:
+              - client 10.0.0.1 server-key 7 XXX
+              - client 10.0.0.2 server-key 7 XXX
+            parents: aaa server radius dynamic-author
+            before: no aaa server radius dynamic-author
+            match: exact
+            running_config: "{{running_config.stdout[0]}}"
+
+        - name: Global dot1x-configuration
+          ignore_errors: true
+          ios_config:
+            lines:
+              # AAA för dot1x/MAB
+              - aaa authentication dot1x default group ISE
+              - aaa authorization network default group ISE
+              - aaa accounting dot1x default start-stop group ISE   
+              - aaa accounting update newinfo periodic 2880
+              - radius-server attribute 6 on-for-login-auth
+              - radius-server attribute 8 include-in-access-req
+              - radius-server attribute 25 access-request include
+              - radius-server vsa send
+              - radius-server vsa send cisco-nas-port
+              - dot1x system-auth-control 
+              - authentication mac-move permit
+              # CDP-changes shall trigger Radius Accounting
+              - mab request format attribute 32 vlan access-vlan
+              - device-sensor accounting
+              - device-sensor notify all-changes      
+            running_config: "{{running_config.stdout[0]}}"
+            save_when: never
+
+        - name: Change from vlan 1 to Public
+          interface_config:
+            lines:
+              - switchport mode access
+              - switchport access vlan {{ access_vlandb.firstMatchingVlanId }}
+              - spanning-tree portfast
+            vlans:
+              - 1
+
+        - name: Apply dot1x config on interfaces that is Public and Users
+          interface_config:
+            lines:
+              - authentication host-mode multi-auth
+              - authentication port-control auto
+              - authentication order dot1x mab
+              - authentication priority dot1x mab
+              - mab
+              - dot1x pae authenticator
+              - dot1x timeout tx-period 2
+            vlans:
+              - Users
+              - Public
+            running_config: "{{running_config.stdout[0]}}"
+
+        - name: Save running-config
+          ios_config:
+            save_when: modified
+
+        - name: Add to success inventory
+          lineinfile:
+            dest: ~/ansible/inventory/dot1x_switches_success.log
+            line: "{{ansible_host}}"
+            state: present
+            create: True
+      rescue:
+        - name: Add to Dot1x failed inventory
+          lineinfile:
+            dest: ~/ansible/inventory/dot1x_switches_fail.log
+            line: "{{ansible_host}}"
+            state: present
+            create: True
+      always:
+        - name: Remove from current inventory
+          lineinfile:
+            dest: ~/ansible/inventory/dot1xswitches.ini
+            line: "{{ansible_host}}"
+            state: absent
+            create: True

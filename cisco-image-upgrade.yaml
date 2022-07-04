@@ -1,0 +1,70 @@
+---
+- name: Apply Golden image
+  hosts: all
+  gather_facts: true
+  connection: network_cli
+  
+  vars:
+    golden_images:
+      "WS-C2960X-48FPD-L" : "c2960x-universalk9-mz.152-2.E7.bin"
+      "WS-C3560CG-8PC-S"  : "test_c3560c405ex-universalk9-mz.152-2.E10.bin"
+
+  tasks:
+    - name: Asset that the IOS version is the wrong one
+      assert:
+        that:
+          - ansible_facts.net_image.find(golden_images[ansible_facts.net_model]) == -1
+
+    - name: Remove files
+      ios_files:
+        delete:
+            - "c3560c405ex-universalk9-mz.*"
+            - "c2960x-universalk9-mz.*"
+            - "test.*"
+        ignore:
+          - "{{ansible_facts.net_image}}"
+        allow_name_cleanup: true
+      register: files
+      tags: remove
+
+    - name: Upload Image
+      command: "copy ftp://golden_images:XXX@YYY/{{golden_images[ansible_facts.net_model]}} flash:/{{golden_images[ansible_facts.net_model]}}"
+      async: 1200
+      poll: 10
+      delegate_to: localhost
+      tags: upload
+        
+    
+    - name: Reconnect to device
+      pause:
+        seconds: 1
+
+    - name: Disable SCP and set new boot image
+      ios_config:
+        lines:
+          - no ip scp server enable
+          - no boot system
+          - "boot system flash:{{golden_images[ansible_facts.net_model]}}"
+        save_when: always
+    
+    - name:
+      cisco.ios.ios_command:
+        commands:
+          - command: reload
+            prompt: '[confirm]'
+
+    - name: Wait for the switch to return
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        delay: 180
+        timeout: 600
+      delegate_to: localhost
+    
+    - name: Asset that the IOS version is the correct one
+      assert:
+        that:
+          - ansible_net_version = golden_images[ansible_facts.ansible_net_model]
+
+    - debug:
+        msg: "Keep {{ansible_facts.net_image}} Delete {{files['deletes']}}"

@@ -1,0 +1,13 @@
+---
+- name: "Test"
+  hosts: ios
+  gather_facts: no
+  tasks:
+   - name: backup the config
+     ios_config:
+      backup: yes
+     register: backup_config
+   - name: Store the config to directory
+     copy:
+      src: "{{ backup_config.backup_path }}"
+      dest: "/home/XXX/ansible/backups/{{ inventory_hostname }}"
